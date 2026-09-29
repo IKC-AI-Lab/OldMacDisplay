@@ -216,10 +216,20 @@ windows on it move back to the main screen.
 
 ### Unplugging and reconnecting
 
-If the cable is pulled or Wi-Fi drops, the Receiver keeps the last frame on
-screen and retries for **30 seconds** with a short backoff. If the Host comes
-back within that window, the session resumes with a fresh keyframe and no
-user action. After 30 seconds it gives up and reports why.
+If the cable is pulled, Wi-Fi drops or either Mac goes to sleep, the
+Receiver keeps the last frame on screen and retries for **5 minutes** with a
+short backoff. If the Host comes back within that window, the session
+resumes with a fresh keyframe and no user action. After that it gives up and
+reports why; click Connect again when the Host is back.
+
+The Host **keeps the virtual display, and every window on it, for a
+Receiver that dropped off without disconnecting**: 30 minutes by default,
+set by **Keep Display**. While it waits, the Host tab says "Waiting for the
+receiver to come back" and the button reads **Remove Display**. Click it to
+give up and have macOS move those windows back to the main screen. A
+Receiver that comes back in time, even after clicking Connect by hand, gets
+the same display with the same windows on it. Disconnecting on purpose, from
+either side, still removes the display at once.
 
 Both sides also watch the heartbeat: **10 seconds** without anything from the
 peer ends the session ("stopped responding"). TCP alone would not notice a
@@ -236,6 +246,7 @@ All settings live on the Host tab and take effect on the next connection
 | **Resolution** | Auto, 1920×1080, 2560×1440, Native | *Auto* picks the largest of 1920×1080, 2560×1440, 1680×1050, 1440×900, 1280×800 that fits the Receiver's panel — capped at 1080p on Wi-Fi. *Native* uses the panel's exact size. |
 | **Frame Rate** | Auto, 30, 60 | *Auto* uses what the Receiver's panel reports (60 Hz on a 2013 iMac). 30 halves the bitrate for the same quality. |
 | **Quality** | Performance, Balanced, Quality | Sets the bitrate budget: about 12, 20 and 30 Mbps for 1080p60 on Ethernet. On Wi-Fi each is reduced by 30 % and capped at 20 Mbps. |
+| **Keep Display** | Remove at once, 5 minutes, 30 minutes, 2 hours, Until removed | How long the virtual display waits, with its windows, for a Receiver that dropped off without disconnecting (it slept, or the cable came out). Default 30 minutes. The time does not run while the Host itself is asleep. Removing the display moves its windows to the main screen. |
 | **Codec** | Auto, H.264, HEVC | *Auto* uses HEVC only when **both** ends decode and encode it in hardware. A 2013 iMac cannot, so it resolves to H.264 there. Forcing HEVC on a Receiver without hardware decode still falls back to H.264. |
 
 **For a 2013 iMac over Ethernet** the defaults (Auto / Auto / Balanced / Auto)
@@ -297,6 +308,7 @@ Useful for diagnostics, direct-cable setups and scripting:
 | `--resolution 1920x1080` | Host | Same as the Resolution setting. |
 | `--fps 60` | Host | Same as the Frame Rate setting. |
 | `--codec h264` / `hevc` / `auto` | Host | Same as the Codec setting. |
+| `--keep-display SECONDS` / `forever` | Host | Like the Keep Display setting, in seconds. `0` removes the display at once. |
 | `--quit-after SECONDS` | both | Exit automatically, for unattended tests. |
 
 Example — old Mac connected by a direct cable to a Host at 192.168.2.2,
@@ -363,7 +375,7 @@ the Receiver also forces the cable.
 
 **Connect stays on "Connecting…" then fails.**
 The address resolved but nothing answered: firewall on the Host blocking
-port 51843, or a VPN routing the traffic away. The Receiver retries for 30 s.
+port 51843, or a VPN routing the traffic away. The Receiver retries for 5 minutes.
 
 **"Host is already connected to another display".**
 The Host accepts one Receiver at a time. Disconnect the other one first.
@@ -387,13 +399,24 @@ Host's heartbeat while its window was hidden. Update both Macs; a lost video
 connection is now re-attached on its own and both apps hold an activity
 that keeps App Nap and idle sleep away while streaming.
 
+**After sleep the old Mac shows an empty desktop; the windows are gone.**
+Versions before 0.3.4 removed the virtual display as soon as the heartbeat
+gave up on a sleeping Mac, and macOS moved its windows to the Host's own
+screen. If the Host had slept, its reconnecting Receiver could also be
+turned away as "already connected". Update both Macs. The display is now
+kept for the time set in **Keep Display**. If the windows still end up on
+the main screen, the wait was longer than that setting: raise it, or choose
+**Until removed**.
+
 **Stutter every few seconds on Wi-Fi.**
 Wi-Fi shares airtime; a neighbour's download or your own iCloud sync causes
 it. The Receiver's "dropped" and "queueing" figures show it happening. Ethernet
 is the real fix.
 
 **The display stays after the session ends.**
-The virtual display is removed when the session ends or the Host quits. If
+The virtual display is removed when either side disconnects on purpose or
+the Host quits. After an unexpected drop it is kept on purpose (see
+**Keep Display**); **Remove Display** on the Host tab removes it at once. If
 macOS ever keeps it (it can if the display's mode was changed in System
 Settings while it existed), quitting the Host removes it.
 

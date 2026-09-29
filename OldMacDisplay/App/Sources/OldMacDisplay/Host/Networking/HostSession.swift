@@ -29,7 +29,18 @@ final class HostSession {
     /// What the Receiver says it is actually managing to display.
     var onReceiverStats: ((ControlMessage.NetworkStats) -> Void)?
 
+    /// Why a session ended. Decides whether the virtual display outlives it.
+    enum EndCause: Equatable {
+        /// Either side hung up on purpose. The display goes with it.
+        case deliberate
+        /// The Receiver vanished without a goodbye: it slept, lost its link,
+        /// or this Mac slept. It will most likely come back.
+        case lost
+    }
+
     private(set) var peer: Peer
+    /// Set on `queue` before `onEnded` fires; read in `onEnded`.
+    private(set) var endCause: EndCause = .lost
     private(set) var stateMachine = ConnectionStateMachine()
 
     /// Presented by the Receiver on its second connection so the server can
@@ -105,9 +116,25 @@ final class HostSession {
             // Tell the peer why, on a best-effort basis, before tearing down.
             self.send(.disconnect(.init(reason: reason)))
             self.advance(.disconnectRequested(reason: reason))
-            self.finish()
+            self.finish(.deliberate)
         }
     }
+
+    /// The same Receiver has connected again, so this session is a leftover
+    /// its peer has already given up on. Typical after this Mac wakes from
+    /// sleep: the uptime clock stops while asleep, so the heartbeat has not
+    /// yet noticed the silence when the Receiver's reconnect arrives. Ends
+    /// as `.lost` so the virtual display survives for the new session.
+    /// On `queue`.
+    func supersede() {
+        log.notice("Receiver reconnected; replacing its previous session")
+        advance(.disconnectRequested(reason: "Receiver reconnected"))
+        finish(.lost)
+    }
+
+    /// The Receiver behind this session, once its `hello` has arrived.
+    /// On `queue`.
+    var peerDeviceID: String? { peer.device?.deviceID }
 
     func updatePreferences(_ preferences: HostPreferences) {
         queue.async { [weak self] in
@@ -204,7 +231,7 @@ final class HostSession {
         case .disconnect(let payload):
             log.info("Receiver disconnected: \(payload.reason)")
             advance(.disconnectRequested(reason: payload.reason))
-            finish()
+            finish(.deliberate)
         case .networkStats(let stats):
             log.debug(String(format: "Receiver: %.1f fps displayed, %.1f%% dropped, queueing %.0f ms",
                              stats.fps, stats.droppedFrameRatio * 100,
@@ -233,7 +260,7 @@ final class HostSession {
             send(.error(.init(code: "E_VERSION", message: message)))
             send(.disconnect(.init(reason: message)))
             advance(.disconnectRequested(reason: message))
-            finish()
+            finish(.deliberate)
             return
         }
         peer.device = hello.device
@@ -386,9 +413,10 @@ final class HostSession {
         callbackQueue.async { [weak self] in self?.onPeerChange?(snapshot) }
     }
 
-    private func finish() {
+    private func finish(_ cause: EndCause = .lost) {
         guard !ended else { return }
         ended = true
+        endCause = cause
         streaming = false
         framesInFlight = 0
         heartbeat.stop()

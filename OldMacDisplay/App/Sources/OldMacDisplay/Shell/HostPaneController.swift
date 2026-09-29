@@ -37,6 +37,19 @@ final class HostPaneController: NSViewController {
     private let fpsPopUp = NSPopUpButton()
     private let qualityPopUp = NSPopUpButton()
     private let codecPopUp = NSPopUpButton()
+    private let retentionPopUp = NSPopUpButton()
+
+    /// Menu order of `retentionPopUp`.
+    private static let retentionChoices: [(title: String, value: HostPreferences.DisplayRetention)] = [
+        ("Remove at once", .removeImmediately),
+        ("5 minutes", .seconds(5 * 60)),
+        ("30 minutes", .seconds(30 * 60)),
+        ("2 hours", .seconds(2 * 60 * 60)),
+        ("Until removed", .untilRemoved)
+    ]
+    /// Whether the button currently removes a kept display rather than
+    /// disconnecting a live Receiver.
+    private var buttonRemovesDisplay = false
 
     private var preferences = HostPreferences.default {
         didSet { server?.updatePreferences(preferences) }
@@ -136,7 +149,8 @@ final class HostPaneController: NSViewController {
             [label("Resolution"), resolutionPopUp],
             [label("Frame Rate"), fpsPopUp],
             [label("Quality"), qualityPopUp],
-            [label("Codec"), codecPopUp]
+            [label("Codec"), codecPopUp],
+            [label("Keep Display"), retentionPopUp]
         ])
         settingsGrid.rowSpacing = 8
         settingsGrid.columnSpacing = 12
@@ -144,7 +158,7 @@ final class HostPaneController: NSViewController {
 
         // Each pop-up otherwise sizes to its own longest title, so the four
         // controls end up four different widths in one column.
-        let popUps = [resolutionPopUp, fpsPopUp, qualityPopUp, codecPopUp]
+        let popUps = [resolutionPopUp, fpsPopUp, qualityPopUp, codecPopUp, retentionPopUp]
         popUps.forEach {
             $0.widthAnchor.constraint(equalTo: resolutionPopUp.widthAnchor).isActive = true
         }
@@ -188,8 +202,10 @@ final class HostPaneController: NSViewController {
         qualityPopUp.addItems(withTitles: ["Performance", "Balanced", "Quality"])
         qualityPopUp.selectItem(at: 1)
         codecPopUp.addItems(withTitles: ["Auto", "H.264", "HEVC"])
+        retentionPopUp.addItems(withTitles: HostPaneController.retentionChoices.map(\.title))
+        retentionPopUp.toolTip = "How long the virtual display, and the windows on it, wait for a Receiver that dropped off without disconnecting (it slept, or lost its cable). Disconnecting on purpose always removes it at once."
 
-        [resolutionPopUp, fpsPopUp, qualityPopUp, codecPopUp].forEach {
+        [resolutionPopUp, fpsPopUp, qualityPopUp, codecPopUp, retentionPopUp].forEach {
             $0.target = self
             $0.action = #selector(settingsChanged)
         }
@@ -252,6 +268,9 @@ final class HostPaneController: NSViewController {
         case .forced(.h264): codecPopUp.selectItem(at: 1)
         case .forced(.hevc): codecPopUp.selectItem(at: 2)
         }
+        let retentionIndex = HostPaneController.retentionChoices
+            .firstIndex { $0.value == preferences.displayRetention } ?? 2
+        retentionPopUp.selectItem(at: retentionIndex)
     }
 
     @objc private func settingsChanged() {
@@ -277,11 +296,19 @@ final class HostPaneController: NSViewController {
         case 2: updated.codec = .forced(.hevc)
         default: updated.codec = .auto
         }
+        let choices = HostPaneController.retentionChoices
+        if choices.indices.contains(retentionPopUp.indexOfSelectedItem) {
+            updated.displayRetention = choices[retentionPopUp.indexOfSelectedItem].value
+        }
         preferences = updated
     }
 
     @objc private func disconnectTapped() {
-        server?.disconnectCurrentSession()
+        if buttonRemovesDisplay {
+            server?.removeRetainedDisplay()
+        } else {
+            server?.disconnectCurrentSession()
+        }
     }
 
     @objc private func openScreenRecordingSettings() {
@@ -308,7 +335,9 @@ final class HostPaneController: NSViewController {
         case .reconnecting(let attempt):
             statusLabel.stringValue = "Reconnecting (attempt \(attempt))…"
         case .disconnected(let reason):
-            statusLabel.stringValue = "Disconnected — \(reason)"
+            statusLabel.stringValue = status.displayRetention != nil
+                ? "Waiting for the receiver to come back — \(reason)"
+                : "Disconnected — \(reason)"
         }
 
         advertisingLabel.stringValue = status.advertising
@@ -327,7 +356,10 @@ final class HostPaneController: NSViewController {
             receiverLabel.stringValue = "No receiver connected"
         }
 
-        if let id = status.virtualDisplayID {
+        if let retention = status.displayRetention, let id = status.virtualDisplayID {
+            let until = retention.seconds.map { " for up to \(Self.describe(seconds: $0))" } ?? " until you remove it"
+            virtualDisplayLabel.stringValue = "Virtual display: kept with its windows\(until) (id \(id))"
+        } else if let id = status.virtualDisplayID {
             virtualDisplayLabel.stringValue = "Virtual display: active (id \(id))"
         } else {
             virtualDisplayLabel.stringValue = "Virtual display: not created"
@@ -400,6 +432,14 @@ final class HostPaneController: NSViewController {
             permissionButton.isHidden = true
         }
 
-        disconnectButton.isEnabled = status.peer != nil
+        buttonRemovesDisplay = status.peer == nil && status.displayRetention != nil
+        disconnectButton.title = buttonRemovesDisplay ? "Remove Display" : "Disconnect"
+        disconnectButton.isEnabled = status.peer != nil || buttonRemovesDisplay
+    }
+
+    private static func describe(seconds: Int) -> String {
+        if seconds % 3600 == 0 { return seconds == 3600 ? "1 hour" : "\(seconds / 3600) hours" }
+        if seconds >= 60 { return "\(seconds / 60) min" }
+        return "\(seconds) s"
     }
 }

@@ -36,6 +36,14 @@ final class HostServer {
         var receiverEndToEndMillis: Double?
         /// Set once macOS is actually extending onto our virtual display.
         var virtualDisplayID: CGDirectDisplayID?
+        /// The Receiver dropped off without a goodbye and the display is
+        /// being kept, with its windows, for it to come back to.
+        var displayRetention: DisplayRetentionState?
+    }
+
+    struct DisplayRetentionState: Equatable {
+        /// `nil` means until the user removes it.
+        var seconds: Int?
     }
 
     var onStatusChange: ((Status) -> Void)?
@@ -65,6 +73,16 @@ final class HostServer {
     /// the Receiver reads as the Host having gone away.
     private var activity: NSObjectProtocol?
     private let virtualDisplayProvider: VirtualDisplayProvider = CGVirtualDisplayProvider()
+    /// What the live virtual display was created for, so a returning
+    /// Receiver that negotiates the same mode can have it back unchanged.
+    /// On `callbackQueue`.
+    private var displayConfiguration: VirtualDisplayConfiguration?
+    /// The session whose stream is running, if any. On `callbackQueue`.
+    private weak var streamOwner: HostSession?
+    /// Removes a kept display once the Receiver has been gone long enough.
+    /// Runs on `DispatchTime`, which stops while this Mac sleeps, so a Host
+    /// that slept overnight still has the display when it wakes.
+    private var retentionTimer: DispatchSourceTimer?
     private var preferences: HostPreferences
     private let log = Log(.network)
 
@@ -104,7 +122,8 @@ final class HostServer {
     }
 
     func stop() {
-        stopStreaming()
+        stopStreaming(keepDisplay: false)
+        removeRetainedDisplay()
         session?.disconnect(reason: "Host stopped")
         session = nil
         advertiser.stop()
@@ -116,6 +135,19 @@ final class HostServer {
 
     func disconnectCurrentSession() {
         session?.disconnect(reason: "Disconnected by host")
+    }
+
+    /// The user gave up waiting for the Receiver: remove the kept display so
+    /// macOS moves its windows back to this Mac's own screen.
+    func removeRetainedDisplay() {
+        guard status.displayRetention != nil else { return }
+        log.info("Removing the kept virtual display")
+        retentionTimer?.cancel()
+        retentionTimer = nil
+        virtualDisplayProvider.destroyDisplay()
+        displayConfiguration = nil
+        status.virtualDisplayID = nil
+        status.displayRetention = nil
     }
 
     func updatePreferences(_ preferences: HostPreferences) {
@@ -192,7 +224,14 @@ final class HostServer {
             log.info("Attaching video connection from \(pendingConnection.endpoint)")
             session.attachVideoTransport(channel)
 
-        case .hello:
+        case .hello(let hello):
+            if let existing = session, existing.peerDeviceID == hello.device.deviceID {
+                // The Receiver only ever holds one session, so a second hello
+                // from the same Mac means the first is dead on its side.
+                // Rejecting it as busy would make the Receiver give up.
+                session = nil
+                existing.supersede()
+            }
             guard session == nil else {
                 log.notice("Rejecting second Receiver from \(pendingConnection.endpoint); one session at a time")
                 reject(channel, code: "E_BUSY", reason: "Host is already connected to another display")
@@ -246,8 +285,13 @@ final class HostServer {
             self?.status.latencyMilliseconds = tracker.smoothedMilliseconds
         }
         session.onEnded = { [weak self] ended in
-            guard let self, self.session === ended else { return }
-            self.stopStreaming()
+            guard let self else { return }
+            if self.streamOwner === ended {
+                self.stopStreaming(keepDisplay: ended.endCause == .lost)
+            }
+            // A superseded session has already been replaced; the new one
+            // owns the status fields below.
+            guard self.session === ended else { return }
             self.session = nil
             self.status.peer = nil
             self.status.negotiated = nil
@@ -267,14 +311,34 @@ final class HostServer {
             return
         }
 
+        streamOwner = session
+        let wanted = VirtualDisplayConfiguration(mode: configuration.mode)
+
+        // A Receiver coming back to a kept display gets the very same one, so
+        // the windows the user left on it are still there.
+        if status.displayRetention != nil {
+            retentionTimer?.cancel()
+            retentionTimer = nil
+            status.displayRetention = nil
+            if displayConfiguration == wanted,
+               let display = virtualDisplayProvider.currentDisplay,
+               CGVirtualDisplayProvider.activeDisplayIDs().contains(display.displayID) {
+                log.info("Receiver is back; reusing virtual display \(display.displayID)")
+                status.virtualDisplayID = display.displayID
+                beginCapture(actualConfiguration(configuration, on: display),
+                             displayID: display.displayID, on: session)
+                return
+            }
+            log.notice("Kept display does not match the new mode or is gone; creating a new one")
+        }
+
         // Create the extra desktop first, then capture only that. Without it
         // we would be mirroring the main display, which is not the point.
         //
         // Off the main thread: macOS registers the display through the main run
         // loop, so waiting for it there would deadlock.
-        virtualDisplayProvider.createDisplay(
-            configuration: VirtualDisplayConfiguration(mode: configuration.mode)
-        ) { [weak self, weak session] result in
+        displayConfiguration = nil
+        virtualDisplayProvider.createDisplay(configuration: wanted) { [weak self, weak session] result in
             guard let self = self, let session = session else { return }
             switch result {
             case .failure(let error):
@@ -283,19 +347,24 @@ final class HostServer {
 
             case .success(let display):
                 self.status.virtualDisplayID = display.displayID
+                self.displayConfiguration = wanted
 
-                // macOS may have restored a remembered mode, so stream what is
-                // actually on screen rather than what we asked for.
-                let actual = SessionConfiguration(
-                    mode: DisplayMode(width: display.width,
-                                      height: display.height,
-                                      refreshRate: configuration.mode.refreshRate),
-                    codec: configuration.codec,
-                    targetBitrateBPS: configuration.targetBitrateBPS)
-
-                self.beginCapture(actual, displayID: display.displayID, on: session)
+                self.beginCapture(self.actualConfiguration(configuration, on: display),
+                                  displayID: display.displayID, on: session)
             }
         }
+    }
+
+    /// macOS may have restored a remembered mode, so stream what is actually
+    /// on screen rather than what was asked for.
+    private func actualConfiguration(_ configuration: SessionConfiguration,
+                                     on display: VirtualDisplay) -> SessionConfiguration {
+        SessionConfiguration(
+            mode: DisplayMode(width: display.width,
+                              height: display.height,
+                              refreshRate: configuration.mode.refreshRate),
+            codec: configuration.codec,
+            targetBitrateBPS: configuration.targetBitrateBPS)
     }
 
     private func beginCapture(_ configuration: SessionConfiguration,
@@ -379,7 +448,11 @@ final class HostServer {
         bitrateController = controller
     }
 
-    private func stopStreaming() {
+    /// `keepDisplay` leaves the virtual display in place, for the time the
+    /// user picked, so a Receiver that dropped off finds its windows where
+    /// it left them.
+    private func stopStreaming(keepDisplay: Bool) {
+        streamOwner = nil
         if let activity = activity {
             ProcessInfo.processInfo.endActivity(activity)
             self.activity = nil
@@ -396,8 +469,13 @@ final class HostServer {
         }
         streamController = nil
         bitrateController = nil
-        virtualDisplayProvider.destroyDisplay()
-        status.virtualDisplayID = nil
+        if keepDisplay, virtualDisplayProvider.currentDisplay != nil {
+            retainDisplay()
+        } else {
+            virtualDisplayProvider.destroyDisplay()
+            displayConfiguration = nil
+            status.virtualDisplayID = nil
+        }
         status.streaming = false
         status.measuredFPS = 0
         status.measuredBitrateBPS = 0
@@ -408,6 +486,37 @@ final class HostServer {
         status.receiverDropRatio = nil
         status.receiverQueueingMillis = nil
         status.receiverEndToEndMillis = nil
+    }
+
+    private func retainDisplay() {
+        retentionTimer?.cancel()
+        retentionTimer = nil
+        let seconds: Int?
+        switch preferences.displayRetention {
+        case .removeImmediately:
+            virtualDisplayProvider.destroyDisplay()
+            displayConfiguration = nil
+            status.virtualDisplayID = nil
+            return
+        case .seconds(let value):
+            seconds = value
+        case .untilRemoved:
+            seconds = nil
+        }
+
+        log.info("Receiver dropped off; keeping the virtual display \(seconds.map { "for \($0) s" } ?? "until removed")")
+        status.displayRetention = DisplayRetentionState(seconds: seconds)
+
+        guard let seconds else { return }
+        let timer = DispatchSource.makeTimerSource(queue: callbackQueue)
+        timer.schedule(deadline: .now() + .seconds(seconds))
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            self.log.info("Receiver did not come back; removing the kept display")
+            self.removeRetainedDisplay()
+        }
+        retentionTimer = timer
+        timer.resume()
     }
 
     /// Sends a protocol-level explanation before hanging up, so the Receiver can

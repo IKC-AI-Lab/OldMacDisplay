@@ -6,6 +6,8 @@ import OldMacDisplayShared
 ///   --codec h264|hevc      force a codec instead of negotiating one
 ///   --fps 30|60            force a frame rate
 ///   --resolution WxH       force the streamed mode
+///   --keep-display S|forever  how long to keep the virtual display after the
+///                          Receiver drops off (0 removes it at once)
 ///
 /// Forcing H.264 matters in testing: on a loopback run both ends report HEVC
 /// hardware support and auto-negotiation picks HEVC, so the H.264 path — the one
@@ -46,6 +48,17 @@ struct HostLaunchOptions {
                     index += 1
                 } else {
                     Log(.app).error("--resolution expects WxH, e.g. 1920x1080")
+                }
+
+            case "--keep-display":
+                if value == "forever" {
+                    options.preferences.displayRetention = .untilRemoved
+                    index += 1
+                } else if let seconds = value.flatMap(Int.init) {
+                    options.preferences.displayRetention = seconds <= 0 ? .removeImmediately : .seconds(seconds)
+                    index += 1
+                } else {
+                    Log(.app).error("--keep-display expects seconds or forever")
                 }
 
             default:

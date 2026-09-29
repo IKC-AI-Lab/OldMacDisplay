@@ -30,7 +30,12 @@ final class ReceiverClient {
     }
 
     /// How long to keep retrying before declaring the session dead.
-    var reconnectGracePeriod: TimeInterval = 30
+    ///
+    /// Long enough to ride out the Host sleeping for a few minutes (lid
+    /// closed, or the Apple menu's Sleep). The Host keeps the virtual display
+    /// for a Receiver that dropped off, so coming back finds the same windows.
+    /// Retries are cheap: at most one connection attempt every 2 s.
+    var reconnectGracePeriod: TimeInterval = 5 * 60
 
     var onStatusChange: ((Status) -> Void)?
     /// Pointer updates, delivered on `callbackQueue`.
