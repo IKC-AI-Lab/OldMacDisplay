@@ -164,6 +164,16 @@ The build script signs with your Apple Development certificate when one is
 present, so the permission survives rebuilds. With an ad-hoc signature every
 rebuild revokes it (the script warns about this).
 
+**Launch the Host from Finder (or `open`), not by running the binary from a
+terminal.** When the executable is started directly from a shell, macOS
+attributes the Screen Recording permission to the terminal rather than to
+OldMacDisplay, ScreenCaptureKit reports "user declined TCCs", and the Host
+never starts capturing. The Receiver side is unaffected.
+
+macOS 15 and later also ask you to re-confirm Screen Recording for the app
+every few weeks. If the Host suddenly reports the permission error after
+working fine, look for that prompt and re-approve.
+
 ### Both machines, macOS 15 or later
 
 **Local Network** permission. macOS asks on first launch. If it is denied,
@@ -358,9 +368,12 @@ port 51843, or a VPN routing the traffic away. The Receiver retries for 30 s.
 **"Host is already connected to another display".**
 The Host accepts one Receiver at a time. Disconnect the other one first.
 
-**Black stream window, Host shows "Screen Recording permission is required".**
+**Black stream window, Host shows "Screen Recording permission is required"
+or "user declined TCCs".**
 Grant it in System Settings › Privacy & Security › Screen Recording and
-**restart OldMacDisplay on the Host**.
+**restart OldMacDisplay on the Host**. If it was granted and still fails,
+the Host was probably launched from a terminal; quit it and launch it from
+Finder (see [First run: permissions](#first-run-permissions)).
 
 **The virtual display appears but the picture is blocky.**
 Check the Host panel. If "adapted to" is much below the target, the link is
@@ -402,7 +415,7 @@ Or, for iteration on one architecture:
 
 ```sh
 cd App && swift build       # debug, host architecture only
-cd Shared && swift test     # 104 unit tests, all pure logic
+cd Shared && swift test     # 105 unit tests, all pure logic
 ```
 
 Signing: the script uses the first `Apple Development` identity in your
@@ -438,7 +451,7 @@ OldMacDisplay/
 │       │   ├── Host/       virtual display, capture, cursor, encode, serve
 │       │   └── Receiver/   discover, connect, decode, render
 │       └── OMDPrivateDisplay/   the only private-API code (Objective-C)
-├── Shared/     protocol, messages, models, transport, controllers (+ 104 tests)
+├── Shared/     protocol, messages, models, transport, controllers (+ 105 tests)
 ├── Scripts/    build.sh, verify-catalina.sh, icon generator
 └── docs/       VIRTUAL_DISPLAY.md, RECEIVER_COMPATIBILITY.md, images/
 ```
