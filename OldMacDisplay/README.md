@@ -211,7 +211,7 @@ screen and retries for **30 seconds** with a short backoff. If the Host comes
 back within that window, the session resumes with a fresh keyframe and no
 user action. After 30 seconds it gives up and reports why.
 
-Both sides also watch the heartbeat: **6 seconds** without anything from the
+Both sides also watch the heartbeat: **10 seconds** without anything from the
 peer ends the session ("stopped responding"). TCP alone would not notice a
 vanished peer for minutes while video is being sent, which left the Host
 showing "Connected" long after the old Mac had gone.
@@ -366,6 +366,13 @@ Grant it in System Settings › Privacy & Security › Screen Recording and
 Check the Host panel. If "adapted to" is much below the target, the link is
 saturated: move to Ethernet, or drop Frame Rate to 30, or Quality to
 Performance. If there is no "adapted to", raise Quality.
+
+**Brief "Reconnecting" every so often, even on Ethernet.**
+Versions before 0.3.3 dropped the whole session when the idle video
+connection failed a five-second TCP keepalive, and let App Nap slow the
+Host's heartbeat while its window was hidden. Update both Macs; a lost video
+connection is now re-attached on its own and both apps hold an activity
+that keeps App Nap and idle sleep away while streaming.
 
 **Stutter every few seconds on Wi-Fi.**
 Wi-Fi shares airtime; a neighbour's download or your own iCloud sync causes

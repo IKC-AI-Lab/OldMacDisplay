@@ -34,7 +34,7 @@ public final class Heartbeat {
     private let log = Log(.network)
 
     public init(interval: Double = 1.0,
-                timeout: Double = 6.0,
+                timeout: Double = 10.0,
                 queue: DispatchQueue,
                 now: @escaping () -> Double = MonotonicClock.now,
                 send: @escaping (ControlMessage) -> Void) {

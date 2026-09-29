@@ -100,6 +100,13 @@ final class ReceiverClient {
     private var queueing = QueueingDelayTracker()
     private var endToEndSum: Double = 0
     private var endToEndCount = 0
+    /// Token from the Host's `hello`, kept so the video carrier can be
+    /// re-attached if it drops while the control connection is fine.
+    private var sessionToken: String?
+    private var videoReattachTimer: DispatchSourceTimer?
+    private var videoReattachAttempts = 0
+    /// Keeps the Mac and App Nap from interfering while a stream is up.
+    private var activity: NSObjectProtocol?
 
     init(profile: ReceiverHardwareProfile, callbackQueue: DispatchQueue = .main) {
         self.profile = profile
@@ -385,10 +392,11 @@ final class ReceiverClient {
             case .failed(let reason):
                 self.log.error("Video connection failed: \(reason)")
                 self.closeVideoTransport()
-                if !self.userInitiatedDisconnect { self.beginReconnect(reason: reason) }
+                self.scheduleVideoReattach()
             case .cancelled:
+                self.log.notice("Video connection closed")
                 self.closeVideoTransport()
-                if !self.userInitiatedDisconnect { self.beginReconnect(reason: "Video connection closed") }
+                self.scheduleVideoReattach()
             case .waiting(let reason):
                 self.log.notice("Video connection waiting (\(reason))")
             case .setup, .preparing:
@@ -402,7 +410,35 @@ final class ReceiverClient {
         channel.start()
     }
 
+    /// Losing the video carrier is not losing the session: the Host falls
+    /// back to sending video on the control connection the moment it notices,
+    /// so nothing is lost but the split. Try to get the split back a few
+    /// times, then live without it. Tearing the whole session down here was
+    /// what turned a five-second stall on an idle carrier into a visible
+    /// disconnect and reconnect.
+    private func scheduleVideoReattach() {
+        guard !userInitiatedDisconnect, transport != nil, let token = sessionToken else { return }
+        guard videoReattachAttempts < 3 else {
+            log.notice("Video carrier not re-attached after \(videoReattachAttempts) attempts; staying on the control connection")
+            return
+        }
+        videoReattachAttempts += 1
+        let attempt = videoReattachAttempts
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + 1.0)
+        timer.setEventHandler { [weak self] in
+            guard let self = self, self.transport != nil, self.videoTransport == nil else { return }
+            self.log.info("Re-attaching video carrier (attempt \(attempt))")
+            self.openVideoTransport(token: token)
+        }
+        videoReattachTimer?.cancel()
+        videoReattachTimer = timer
+        timer.resume()
+    }
+
     private func closeVideoTransport() {
+        videoReattachTimer?.cancel()
+        videoReattachTimer = nil
         guard let channel = videoTransport else { return }
         videoTransport = nil
         channel.onStateChange = nil
@@ -450,9 +486,28 @@ final class ReceiverClient {
         timer.resume()
     }
 
+    /// While this Mac is being used as a display, neither it nor this
+    /// process may doze off: App Nap would delay the heartbeat past its
+    /// timeout, and idle display sleep would blank the very screen being
+    /// streamed to.
+    private func beginActivity() {
+        guard activity == nil else { return }
+        activity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .latencyCritical, .idleDisplaySleepDisabled, .idleSystemSleepDisabled],
+            reason: "Showing a remote display")
+    }
+
+    private func endActivity() {
+        guard let activity = activity else { return }
+        ProcessInfo.processInfo.endActivity(activity)
+        self.activity = nil
+    }
+
     private func teardownTransport() {
         connectWatchdog?.cancel()
         connectWatchdog = nil
+        endActivity()
+        sessionToken = nil
         // The next connection restarts the encoder, so the old parameter sets
         // no longer describe the incoming bitstream.
         assembler.reset()
@@ -499,6 +554,8 @@ final class ReceiverClient {
                 self?.status.hostDevice = hello.device
                 self?.status.hostName = hello.device.name
             }
+            sessionToken = hello.sessionToken
+            videoReattachAttempts = 0
             if let token = hello.sessionToken {
                 openVideoTransport(token: token)
             }
@@ -517,11 +574,13 @@ final class ReceiverClient {
         case .streamStart:
             log.info("Stream started")
             resetVideoStats()
+            beginActivity()
             callbackQueue.async { [weak self] in self?.status.streaming = true }
 
         case .streamStop:
             log.info("Stream stopped")
             assembler.reset()
+            endActivity()
             callbackQueue.async { [weak self] in
                 self?.status.streaming = false
                 self?.status.measuredFPS = 0

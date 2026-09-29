@@ -59,6 +59,11 @@ final class HostServer {
     private var cursorTracker: CursorTracker?
     private var bitrateController: BitrateController?
     private var lastNetworkDroppedFrames = 0
+    /// Held while streaming. Without it, App Nap kicks in as soon as this
+    /// window is hidden behind the ones being worked in (which is exactly
+    /// how a Host is used) and delays the heartbeat timers by seconds, which
+    /// the Receiver reads as the Host having gone away.
+    private var activity: NSObjectProtocol?
     private let virtualDisplayProvider: VirtualDisplayProvider = CGVirtualDisplayProvider()
     private var preferences: HostPreferences
     private let log = Log(.network)
@@ -326,6 +331,12 @@ final class HostServer {
             }
         }
 
+        if activity == nil {
+            activity = ProcessInfo.processInfo.beginActivity(
+                options: [.userInitiated, .latencyCritical, .idleSystemSleepDisabled],
+                reason: "Streaming a display")
+        }
+
         // Every (re)start of the pipeline resets the adaptive loop to the
         // negotiated opening bid.
         bitrateController = BitrateController(targetBPS: configuration.targetBitrateBPS)
@@ -369,6 +380,10 @@ final class HostServer {
     }
 
     private func stopStreaming() {
+        if let activity = activity {
+            ProcessInfo.processInfo.endActivity(activity)
+            self.activity = nil
+        }
         cursorTracker?.stop()
         cursorTracker = nil
         if #available(macOS 13.0, *), let controller = streamController as? StreamController {

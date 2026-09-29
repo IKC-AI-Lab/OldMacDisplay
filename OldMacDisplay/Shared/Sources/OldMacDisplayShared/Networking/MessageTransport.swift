@@ -72,10 +72,12 @@ public extension MessageTransport {
 /// on a LAN.
 public enum TCPTuning {
     public static let noDelay = true
-    /// Keepalive so a yanked cable surfaces as a failure reasonably quickly
-    /// instead of hanging until the default TCP timeout.
-    public static let keepaliveIdleSeconds = 2
-    public static let keepaliveCount = 3
-    public static let keepaliveIntervalSeconds = 1
+    /// Keepalive is a safety net only. Liveness is the application-level
+    /// heartbeat (`Heartbeat.timeout`); these used to be 2 s / 1 s / 3, which
+    /// declared an idle video connection dead after a five-second stall and
+    /// dropped whole sessions on a still desktop.
+    public static let keepaliveIdleSeconds = 15
+    public static let keepaliveCount = 4
+    public static let keepaliveIntervalSeconds = 5
     public static let connectionTimeoutSeconds = 5
 }
