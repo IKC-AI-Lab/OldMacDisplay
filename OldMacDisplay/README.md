@@ -378,6 +378,15 @@ self-assigned 169.254 address. If the Host still does not show up, check
 that it is allowed under System Settings › Privacy & Security ›
 Local Network, or launch the Receiver with `--connect <Host address>`.
 
+**"Service not running" (NWError -65563) while the Host waits.**
+That is DNS-SD's "ServiceNotRunning": macOS restarted mDNSResponder, the
+system service behind Bonjour, which it does on network changes and after
+sleep. Every registration made through it dies with it. Before 0.3.7 the
+Host stopped advertising for good and needed a restart. It now opens a new
+listener on its own after 1, 2, 4 … up to 30 s, and the Receiver restarts
+its search the same way. The message only shows if three restarts in a row
+fail. A stream already running is not affected.
+
 **The Receiver says "over Wi-Fi" although a cable is connected.**
 Make sure **Ethernet** is selected on the Receiver before connecting: that is
 what pins the connection to the cable. If it still lands on Wi-Fi, the Host

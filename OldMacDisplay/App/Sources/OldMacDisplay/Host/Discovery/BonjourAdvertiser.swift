@@ -33,8 +33,57 @@ final class BonjourAdvertiser {
         self.queue = queue
     }
 
+    /// Restarts after a failure. Set on `queue`.
+    private var restartTimer: DispatchSourceTimer?
+    private var consecutiveFailures = 0
+    private var running = false
+
+    /// After this many failed restarts in a row the UI is told; before that
+    /// a hiccup is fixed without the user ever seeing it.
+    private static let failuresBeforeReporting = 3
+
     func start(device: DeviceInfo, port: UInt16 = OMDProtocol.defaultPort) {
-        stop()
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.stopOnQueue()
+            self.device = device
+            self.port = port
+            self.running = true
+            self.consecutiveFailures = 0
+            self.startListener()
+            self.startWatchingLinks()
+        }
+    }
+
+    func stop() {
+        queue.async { [weak self] in self?.stopOnQueue() }
+    }
+
+    /// On `queue`.
+    private func stopOnQueue() {
+        running = false
+        restartTimer?.cancel()
+        restartTimer = nil
+        pathMonitor?.cancel()
+        pathMonitor = nil
+        refreshWork?.cancel()
+        refreshWork = nil
+        cancelListener()
+    }
+
+    private func cancelListener() {
+        listener?.stateUpdateHandler = nil
+        listener?.newConnectionHandler = nil
+        listener?.cancel()
+        listener = nil
+    }
+
+    /// On `queue`. Opens the listening socket and registers the Bonjour
+    /// service. Live sessions do not go through the listener, so restarting
+    /// it never interrupts a stream.
+    private func startListener() {
+        guard running, let device = device else { return }
+        cancelListener()
         do {
             let parameters = NWMessageChannel.parameters()
             // Without this a restart within the TIME_WAIT window fails to bind.
@@ -47,20 +96,25 @@ final class BonjourAdvertiser {
             let addresses = LocalAddresses.current()
             log.info("Advertising addresses: \(BonjourAdvertiser.describe(addresses))")
             advertisedAddresses = addresses
-            self.device = device
-            self.port = port
             listener.service = BonjourAdvertiser.service(for: device, port: port, addresses: addresses)
 
-            listener.stateUpdateHandler = { [weak self] state in
-                guard let self else { return }
+            listener.stateUpdateHandler = { [weak self, weak listener] state in
+                guard let self, let listener, listener === self.listener else { return }
                 switch state {
                 case .ready:
-                    let actualPort = listener.port?.rawValue ?? port
+                    self.consecutiveFailures = 0
+                    let actualPort = listener.port?.rawValue ?? self.port
                     self.log.info("Advertising \(OMDProtocol.bonjourServiceType) as '\(device.name)' on port \(actualPort)")
                     self.onStateChange?(.advertising(port: actualPort))
                 case .failed(let error):
+                    // Typically DNS-SD -65563 "ServiceNotRunning": macOS
+                    // restarted mDNSResponder (network change, wake from
+                    // sleep) and every registration made through it died.
+                    // The listener never recovers on its own; a new one does.
                     self.log.failure("Listener failed", error)
-                    self.onStateChange?(.failed(error.localizedDescription))
+                    self.listenerFailed(error.localizedDescription)
+                case .waiting(let error):
+                    self.log.notice("Listener waiting: \(error)")
                 case .cancelled:
                     self.onStateChange?(.stopped)
                 default:
@@ -75,22 +129,32 @@ final class BonjourAdvertiser {
 
             self.listener = listener
             listener.start(queue: queue)
-            startWatchingLinks()
         } catch {
             log.failure("Creating listener on port \(port)", error)
-            onStateChange?(.failed(error.localizedDescription))
+            listenerFailed(error.localizedDescription)
         }
     }
 
-    func stop() {
-        pathMonitor?.cancel()
-        pathMonitor = nil
-        refreshWork?.cancel()
-        refreshWork = nil
-        listener?.stateUpdateHandler = nil
-        listener?.newConnectionHandler = nil
-        listener?.cancel()
-        listener = nil
+    /// On `queue`.
+    private func listenerFailed(_ reason: String) {
+        cancelListener()
+        guard running else { return }
+        consecutiveFailures += 1
+        if consecutiveFailures >= BonjourAdvertiser.failuresBeforeReporting {
+            onStateChange?(.failed("\(reason) Retrying…"))
+        }
+        // 1, 2, 4, 8, 16, then every 30 s, for as long as the Host runs.
+        let delay = min(pow(2.0, Double(consecutiveFailures - 1)), 30)
+        log.notice("Restarting the listener in \(Int(delay)) s (failure \(consecutiveFailures))")
+        restartTimer?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + delay)
+        timer.setEventHandler { [weak self] in
+            self?.restartTimer = nil
+            self?.startListener()
+        }
+        restartTimer = timer
+        timer.resume()
     }
 
     private static func service(for device: DeviceInfo, port: UInt16,
@@ -125,7 +189,7 @@ final class BonjourAdvertiser {
     }
 
     private func refreshAddresses() {
-        guard let listener = listener, let device = device else { return }
+        guard let listener = listener, listener.state == .ready, let device = device else { return }
         let addresses = LocalAddresses.current()
         guard addresses != advertisedAddresses else { return }
         advertisedAddresses = addresses

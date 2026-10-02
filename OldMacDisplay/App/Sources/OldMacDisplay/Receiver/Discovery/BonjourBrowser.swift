@@ -152,6 +152,8 @@ final class BonjourBrowser {
     private let queue: DispatchQueue
     private let callbackQueue: DispatchQueue
     private var browser: NWBrowser?
+    /// Consecutive browser failures. On `queue`.
+    private var failures = 0
     private let log = Log(.discovery)
 
     init(queue: DispatchQueue, callbackQueue: DispatchQueue = .main) {
@@ -174,10 +176,24 @@ final class BonjourBrowser {
             guard let self = self else { return }
             switch state {
             case .ready:
+                self.failures = 0
                 self.log.info("Browsing for \(OMDProtocol.bonjourServiceType)")
             case .failed(let error):
+                // Usually DNS-SD -65563 "ServiceNotRunning": macOS restarted
+                // mDNSResponder and the browse died with it. A fresh browser
+                // works again, so start one rather than leave the list frozen.
                 self.log.failure("Browser failed", error)
-                self.callbackQueue.async { self.onError?(error.localizedDescription) }
+                self.failures += 1
+                if self.failures >= 3 {
+                    self.callbackQueue.async { self.onError?(error.localizedDescription) }
+                }
+                let delay = min(pow(2.0, Double(self.failures - 1)), 30)
+                // `start()` is owned by the callback (main) queue.
+                self.callbackQueue.asyncAfter(deadline: .now() + delay) { [weak self, weak browser] in
+                    guard let self, let browser, browser === self.browser else { return }
+                    self.log.notice("Restarting the browser")
+                    self.start()
+                }
             case .cancelled:
                 self.log.info("Browser cancelled")
             default:
