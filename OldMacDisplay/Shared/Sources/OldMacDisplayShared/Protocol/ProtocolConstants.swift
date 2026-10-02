@@ -28,10 +28,6 @@ public enum OMDProtocol {
         /// answers first (usually Wi-Fi, even with a cable in).
         public static let ethernetAddress = "eth"
         public static let wifiAddress = "wifi"
-        /// Thunderbolt Bridge, kept apart from `eth`: a Host can have both
-        /// an adapter on the LAN and a Thunderbolt cable to the Receiver, and
-        /// the Receiver needs the address on the wire it is actually using.
-        public static let bridgeAddress = "tb"
         public static let port = "port"
     }
 

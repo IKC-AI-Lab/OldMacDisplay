@@ -28,18 +28,10 @@ public final class NWMessageChannel: MessageTransport {
     /// use it with a concrete `hostPort` endpoint on that link: with a
     /// Bonjour service endpoint the constraint stalls the connection (see
     /// `parameters()`).
-    ///
-    /// `requiredInterface` pins to one specific interface instead, for links
-    /// whose type says nothing useful (a Thunderbolt Bridge reports `.other`).
     public convenience init(endpoint: NWEndpoint, queue: DispatchQueue,
-                            requiredInterfaceType: NWInterface.InterfaceType? = nil,
-                            requiredInterface: NWInterface? = nil) {
+                            requiredInterfaceType: NWInterface.InterfaceType? = nil) {
         let params = NWMessageChannel.parameters()
-        if let interface = requiredInterface {
-            params.requiredInterface = interface
-        } else if let type = requiredInterfaceType {
-            params.requiredInterfaceType = type
-        }
+        if let type = requiredInterfaceType { params.requiredInterfaceType = type }
         self.init(connection: NWConnection(to: endpoint, using: params), queue: queue)
     }
 
@@ -80,8 +72,6 @@ public final class NWMessageChannel: MessageTransport {
         guard let interface = connection.currentPath?.availableInterfaces.first else {
             return .unknown
         }
-        // A Thunderbolt Bridge is a cable and gets the cable's bitrate budget.
-        if interface.isCable { return .ethernet }
         switch interface.type {
         case .wiredEthernet: return .ethernet
         case .wifi:          return .wifi

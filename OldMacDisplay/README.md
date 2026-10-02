@@ -365,28 +365,6 @@ raise Quality; if the link cannot sustain it, the Host panel will show
 The two machines run different protocol versions. Copy the same build to
 both. The subtitle names the version each side speaks.
 
-**The Host does not appear under Ethernet (MacBook Air, Thunderbolt cable).**
-A MacBook Air has no Ethernet port, so it is cabled through a USB-C
-Ethernet adapter or a Thunderbolt cable. A Thunderbolt cable between two
-Macs comes up as **Thunderbolt Bridge**, which macOS does not call Ethernet,
-so versions before 0.3.6 hid the Host under the Ethernet filter. They also
-read the Host's addresses only at launch, so an adapter plugged in later
-was never published. Update both Macs. The Host now lists the Thunderbolt
-Bridge as a cable, publishes its address, and republishes when a link comes
-or goes. On a direct cable, give the link a few seconds to get its
-self-assigned 169.254 address. If the Host still does not show up, check
-that it is allowed under System Settings › Privacy & Security ›
-Local Network, or launch the Receiver with `--connect <Host address>`.
-
-**"Service not running" (NWError -65563) while the Host waits.**
-That is DNS-SD's "ServiceNotRunning": macOS restarted mDNSResponder, the
-system service behind Bonjour, which it does on network changes and after
-sleep. Every registration made through it dies with it. Before 0.3.7 the
-Host stopped advertising for good and needed a restart. It now opens a new
-listener on its own after 1, 2, 4 … up to 30 s, and the Receiver restarts
-its search the same way. The message only shows if three restarts in a row
-fail. A stream already running is not affected.
-
 **The Receiver says "over Wi-Fi" although a cable is connected.**
 Make sure **Ethernet** is selected on the Receiver before connecting: that is
 what pins the connection to the cable. If it still lands on Wi-Fi, the Host

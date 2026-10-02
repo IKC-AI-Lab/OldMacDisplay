@@ -22,51 +22,21 @@ struct DiscoveredHost: Equatable {
     /// port it listens on. Lets the Receiver connect to the cable's address
     /// directly instead of whichever address the resolver reaches first.
     var addresses: [LinkFilter: String] = [:]
-    /// The Host's Thunderbolt Bridge address, if it has one.
-    var bridgeAddress: String?
     var port: UInt16 = OMDProtocol.defaultPort
 
-    /// How to reach this Host over `link`: a concrete address on that link,
-    /// and either a specific interface or an interface type to pin to.
-    struct Route {
-        let endpoint: NWEndpoint
-        let interfaceType: NWInterface.InterfaceType?
-        let interface: NWInterface?
-    }
-
-    /// A concrete, pinned route on `link`, if the Host published an address
-    /// for the wire this Mac found it over.
-    func directRoute(over link: LinkFilter) -> Route? {
-        guard let nwPort = NWEndpoint.Port(rawValue: port) else { return nil }
-        func endpoint(_ address: String) -> NWEndpoint {
-            .hostPort(host: NWEndpoint.Host(address), port: nwPort)
+    /// A concrete endpoint on `link`, if the Host published one.
+    func directEndpoint(over link: LinkFilter) -> NWEndpoint? {
+        guard let address = addresses[link], let nwPort = NWEndpoint.Port(rawValue: port) else {
+            return nil
         }
-        switch link {
-        case .wifi:
-            guard let address = addresses[.wifi] else { return nil }
-            return Route(endpoint: endpoint(address), interfaceType: .wifi, interface: nil)
-        case .ethernet:
-            // Found over a Thunderbolt cable: pin to that very interface,
-            // since its type (.other) cannot be pinned to.
-            if let bridge = interfaces.first(where: { $0.isBridge }),
-               !interfaces.contains(where: { $0.type == .wiredEthernet }) {
-                let address = bridgeAddress ?? addresses[.ethernet]
-                return address.map { Route(endpoint: endpoint($0), interfaceType: nil, interface: bridge) }
-            }
-            guard let address = addresses[.ethernet] ?? bridgeAddress else { return nil }
-            return Route(endpoint: endpoint(address), interfaceType: .wiredEthernet, interface: nil)
-        }
+        return .hostPort(host: NWEndpoint.Host(address), port: nwPort)
     }
 
     /// Whether this Host was advertised over `link`.
     func isReachable(over link: LinkFilter) -> Bool {
         // A manually typed address carries no interface information, so it is
         // shown under every link rather than hidden everywhere.
-        guard !interfaces.isEmpty else { return true }
-        switch link {
-        case .ethernet: return interfaces.contains { $0.isCable }
-        case .wifi: return interfaces.contains { $0.type == .wifi }
-        }
+        interfaces.isEmpty || interfaces.contains { $0.type == link.interfaceType }
     }
 
     /// True when this Host speaks a protocol version we can actually talk to.
@@ -88,7 +58,7 @@ struct DiscoveredHost: Equatable {
             switch interface.type {
             case .wiredEthernet: return "Ethernet"
             case .wifi: return "Wi-Fi"
-            default: return interface.isBridge ? "Thunderbolt" : nil
+            default: return nil
             }
         }
         guard !names.isEmpty else { return "link unknown" }
@@ -152,8 +122,6 @@ final class BonjourBrowser {
     private let queue: DispatchQueue
     private let callbackQueue: DispatchQueue
     private var browser: NWBrowser?
-    /// Consecutive browser failures. On `queue`.
-    private var failures = 0
     private let log = Log(.discovery)
 
     init(queue: DispatchQueue, callbackQueue: DispatchQueue = .main) {
@@ -176,24 +144,10 @@ final class BonjourBrowser {
             guard let self = self else { return }
             switch state {
             case .ready:
-                self.failures = 0
                 self.log.info("Browsing for \(OMDProtocol.bonjourServiceType)")
             case .failed(let error):
-                // Usually DNS-SD -65563 "ServiceNotRunning": macOS restarted
-                // mDNSResponder and the browse died with it. A fresh browser
-                // works again, so start one rather than leave the list frozen.
                 self.log.failure("Browser failed", error)
-                self.failures += 1
-                if self.failures >= 3 {
-                    self.callbackQueue.async { self.onError?(error.localizedDescription) }
-                }
-                let delay = min(pow(2.0, Double(self.failures - 1)), 30)
-                // `start()` is owned by the callback (main) queue.
-                self.callbackQueue.asyncAfter(deadline: .now() + delay) { [weak self, weak browser] in
-                    guard let self, let browser, browser === self.browser else { return }
-                    self.log.notice("Restarting the browser")
-                    self.start()
-                }
+                self.callbackQueue.async { self.onError?(error.localizedDescription) }
             case .cancelled:
                 self.log.info("Browser cancelled")
             default:
@@ -228,7 +182,6 @@ final class BonjourBrowser {
         var osVersion: String?
         var protocolVersion: Int?
         var addresses: [LinkFilter: String] = [:]
-        var bridgeAddress: String?
         var port = OMDProtocol.defaultPort
         if case .bonjour(let txt) = result.metadata {
             model = txt[OMDProtocol.TXTKey.deviceModel]
@@ -236,7 +189,6 @@ final class BonjourBrowser {
             protocolVersion = txt[OMDProtocol.TXTKey.protocolVersion].flatMap(Int.init)
             if let eth = txt[OMDProtocol.TXTKey.ethernetAddress] { addresses[.ethernet] = eth }
             if let wifi = txt[OMDProtocol.TXTKey.wifiAddress] { addresses[.wifi] = wifi }
-            if let bridge = txt[OMDProtocol.TXTKey.bridgeAddress] { bridgeAddress = bridge }
             if let published = txt[OMDProtocol.TXTKey.port].flatMap(UInt16.init) { port = published }
         }
 
@@ -247,7 +199,6 @@ final class BonjourBrowser {
                               osVersion: osVersion,
                               protocolVersion: protocolVersion,
                               addresses: addresses,
-                              bridgeAddress: bridgeAddress,
                               port: port)
     }
 }

@@ -14,8 +14,6 @@ enum LocalAddresses {
     struct Snapshot: Equatable {
         var ethernet: String?
         var wifi: String?
-        /// Thunderbolt Bridge: a Thunderbolt cable straight to another Mac.
-        var bridge: String?
     }
 
     static func current() -> Snapshot {
@@ -32,8 +30,7 @@ enum LocalAddresses {
                   (Int32(entry.ifa_flags) & IFF_UP) != 0,
                   (Int32(entry.ifa_flags) & IFF_LOOPBACK) == 0 else { continue }
             let name = String(cString: entry.ifa_name)
-            // Bridges are not always in `SCNetworkInterfaceCopyAll`.
-            guard let type = types[name] ?? (name.hasPrefix("bridge") ? .bridge : nil) else { continue }
+            guard let type = types[name] else { continue }
 
             var buffer = [CChar](repeating: 0, count: Int(NI_MAXHOST))
             guard getnameinfo(sa, socklen_t(sa.pointee.sa_len), &buffer, socklen_t(buffer.count),
@@ -53,16 +50,12 @@ enum LocalAddresses {
                 if snapshot.wifi == nil || (snapshot.wifi!.hasPrefix("169.254.") && !linkLocal) {
                     snapshot.wifi = address
                 }
-            case .bridge:
-                if snapshot.bridge == nil || (snapshot.bridge!.hasPrefix("169.254.") && !linkLocal) {
-                    snapshot.bridge = address
-                }
             }
         }
         return snapshot
     }
 
-    private enum LinkKind { case ethernet, wifi, bridge }
+    private enum LinkKind { case ethernet, wifi }
 
     private static func interfaceTypesByBSDName() -> [String: LinkKind] {
         guard let interfaces = SCNetworkInterfaceCopyAll() as? [SCNetworkInterface] else { return [:] }
@@ -76,10 +69,6 @@ enum LocalAddresses {
                 result[name] = .ethernet
             } else if type == (kSCNetworkInterfaceTypeIEEE80211 as String) {
                 result[name] = .wifi
-            } else if type == "Bridge" || name.hasPrefix("bridge") {
-                // Thunderbolt Bridge carries the address; its member ports
-                // (en1, en2…) have none.
-                result[name] = .bridge
             }
         }
         return result
