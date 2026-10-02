@@ -22,21 +22,51 @@ struct DiscoveredHost: Equatable {
     /// port it listens on. Lets the Receiver connect to the cable's address
     /// directly instead of whichever address the resolver reaches first.
     var addresses: [LinkFilter: String] = [:]
+    /// The Host's Thunderbolt Bridge address, if it has one.
+    var bridgeAddress: String?
     var port: UInt16 = OMDProtocol.defaultPort
 
-    /// A concrete endpoint on `link`, if the Host published one.
-    func directEndpoint(over link: LinkFilter) -> NWEndpoint? {
-        guard let address = addresses[link], let nwPort = NWEndpoint.Port(rawValue: port) else {
-            return nil
+    /// How to reach this Host over `link`: a concrete address on that link,
+    /// and either a specific interface or an interface type to pin to.
+    struct Route {
+        let endpoint: NWEndpoint
+        let interfaceType: NWInterface.InterfaceType?
+        let interface: NWInterface?
+    }
+
+    /// A concrete, pinned route on `link`, if the Host published an address
+    /// for the wire this Mac found it over.
+    func directRoute(over link: LinkFilter) -> Route? {
+        guard let nwPort = NWEndpoint.Port(rawValue: port) else { return nil }
+        func endpoint(_ address: String) -> NWEndpoint {
+            .hostPort(host: NWEndpoint.Host(address), port: nwPort)
         }
-        return .hostPort(host: NWEndpoint.Host(address), port: nwPort)
+        switch link {
+        case .wifi:
+            guard let address = addresses[.wifi] else { return nil }
+            return Route(endpoint: endpoint(address), interfaceType: .wifi, interface: nil)
+        case .ethernet:
+            // Found over a Thunderbolt cable: pin to that very interface,
+            // since its type (.other) cannot be pinned to.
+            if let bridge = interfaces.first(where: { $0.isBridge }),
+               !interfaces.contains(where: { $0.type == .wiredEthernet }) {
+                let address = bridgeAddress ?? addresses[.ethernet]
+                return address.map { Route(endpoint: endpoint($0), interfaceType: nil, interface: bridge) }
+            }
+            guard let address = addresses[.ethernet] ?? bridgeAddress else { return nil }
+            return Route(endpoint: endpoint(address), interfaceType: .wiredEthernet, interface: nil)
+        }
     }
 
     /// Whether this Host was advertised over `link`.
     func isReachable(over link: LinkFilter) -> Bool {
         // A manually typed address carries no interface information, so it is
         // shown under every link rather than hidden everywhere.
-        interfaces.isEmpty || interfaces.contains { $0.type == link.interfaceType }
+        guard !interfaces.isEmpty else { return true }
+        switch link {
+        case .ethernet: return interfaces.contains { $0.isCable }
+        case .wifi: return interfaces.contains { $0.type == .wifi }
+        }
     }
 
     /// True when this Host speaks a protocol version we can actually talk to.
@@ -58,7 +88,7 @@ struct DiscoveredHost: Equatable {
             switch interface.type {
             case .wiredEthernet: return "Ethernet"
             case .wifi: return "Wi-Fi"
-            default: return nil
+            default: return interface.isBridge ? "Thunderbolt" : nil
             }
         }
         guard !names.isEmpty else { return "link unknown" }
@@ -182,6 +212,7 @@ final class BonjourBrowser {
         var osVersion: String?
         var protocolVersion: Int?
         var addresses: [LinkFilter: String] = [:]
+        var bridgeAddress: String?
         var port = OMDProtocol.defaultPort
         if case .bonjour(let txt) = result.metadata {
             model = txt[OMDProtocol.TXTKey.deviceModel]
@@ -189,6 +220,7 @@ final class BonjourBrowser {
             protocolVersion = txt[OMDProtocol.TXTKey.protocolVersion].flatMap(Int.init)
             if let eth = txt[OMDProtocol.TXTKey.ethernetAddress] { addresses[.ethernet] = eth }
             if let wifi = txt[OMDProtocol.TXTKey.wifiAddress] { addresses[.wifi] = wifi }
+            if let bridge = txt[OMDProtocol.TXTKey.bridgeAddress] { bridgeAddress = bridge }
             if let published = txt[OMDProtocol.TXTKey.port].flatMap(UInt16.init) { port = published }
         }
 
@@ -199,6 +231,7 @@ final class BonjourBrowser {
                               osVersion: osVersion,
                               protocolVersion: protocolVersion,
                               addresses: addresses,
+                              bridgeAddress: bridgeAddress,
                               port: port)
     }
 }

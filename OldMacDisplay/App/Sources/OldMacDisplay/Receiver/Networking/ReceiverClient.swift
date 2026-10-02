@@ -70,8 +70,11 @@ final class ReceiverClient {
         /// Pins the connection to this kind of link. Only ever set together
         /// with a concrete `hostPort` endpoint on that link.
         let interfaceType: NWInterface.InterfaceType?
+        /// Pins to one interface; used where the type cannot be pinned to.
+        var interface: NWInterface? = nil
         let timeout: TimeInterval
         var label: String {
+            if let interface = interface { return "\(interface.name)-pinned \(endpoint)" }
             switch interfaceType {
             case .wiredEthernet?: return "Ethernet-pinned \(endpoint)"
             case .wifi?: return "Wi-Fi-pinned \(endpoint)"
@@ -140,8 +143,9 @@ final class ReceiverClient {
     /// remains as the fallback.
     func connect(to host: DiscoveredHost, preferring link: LinkFilter? = nil) {
         var plan: [ConnectAttempt] = []
-        if let link = link, let direct = host.directEndpoint(over: link) {
-            plan.append(ConnectAttempt(endpoint: direct, interfaceType: link.interfaceType, timeout: 4))
+        if let link = link, let route = host.directRoute(over: link) {
+            plan.append(ConnectAttempt(endpoint: route.endpoint, interfaceType: route.interfaceType,
+                                       interface: route.interface, timeout: 4))
         }
         plan.append(ConnectAttempt(endpoint: host.endpoint, interfaceType: nil, timeout: 6))
 
@@ -236,7 +240,8 @@ final class ReceiverClient {
         log.info("Connecting: \(attempt.label)")
 
         let channel = NWMessageChannel(endpoint: attempt.endpoint, queue: queue,
-                                       requiredInterfaceType: attempt.interfaceType)
+                                       requiredInterfaceType: attempt.interfaceType,
+                                       requiredInterface: attempt.interface)
         channel.onStateChange = { [weak self] state in self?.handleTransport(state) }
         channel.onFrame = { [weak self] frame in self?.handle(frame) }
         channel.onError = { [weak self] error in
@@ -381,7 +386,8 @@ final class ReceiverClient {
         // Same concrete address and the same pin as the control connection,
         // so both carriers share one link.
         let channel = NWMessageChannel(endpoint: endpoint, queue: queue,
-                                       requiredInterfaceType: plan[planIndex].interfaceType)
+                                       requiredInterfaceType: plan[planIndex].interfaceType,
+                                       requiredInterface: plan[planIndex].interface)
         channel.onFrame = { [weak self] frame in self?.handle(frame) }
         channel.onStateChange = { [weak self] state in
             guard let self = self else { return }

@@ -365,6 +365,19 @@ raise Quality; if the link cannot sustain it, the Host panel will show
 The two machines run different protocol versions. Copy the same build to
 both. The subtitle names the version each side speaks.
 
+**The Host does not appear under Ethernet (MacBook Air, Thunderbolt cable).**
+A MacBook Air has no Ethernet port, so it is cabled through a USB-C
+Ethernet adapter or a Thunderbolt cable. A Thunderbolt cable between two
+Macs comes up as **Thunderbolt Bridge**, which macOS does not call Ethernet,
+so versions before 0.3.6 hid the Host under the Ethernet filter. They also
+read the Host's addresses only at launch, so an adapter plugged in later
+was never published. Update both Macs. The Host now lists the Thunderbolt
+Bridge as a cable, publishes its address, and republishes when a link comes
+or goes. On a direct cable, give the link a few seconds to get its
+self-assigned 169.254 address. If the Host still does not show up, check
+that it is allowed under System Settings › Privacy & Security ›
+Local Network, or launch the Receiver with `--connect <Host address>`.
+
 **The Receiver says "over Wi-Fi" although a cable is connected.**
 Make sure **Ethernet** is selected on the Receiver before connecting: that is
 what pins the connection to the cable. If it still lands on Wi-Fi, the Host

@@ -32,7 +32,7 @@ enum LinkFilter: Int, CaseIterable {
     var emptyMessage: String {
         switch self {
         case .ethernet:
-            return "No Macs found over Ethernet. Check the cable is connected at both ends."
+            return "No Macs found over Ethernet or Thunderbolt. Check the cable is connected at both ends and the Host is running. On a direct cable, launching with --connect <Host address> also works."
         case .wifi:
             return "No Macs found over Wi-Fi. Check both Macs are on the same network."
         }

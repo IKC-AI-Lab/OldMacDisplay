@@ -20,6 +20,14 @@ final class BonjourAdvertiser {
     private let queue: DispatchQueue
     private let log = Log(.discovery)
     private var listener: NWListener?
+    private var device: DeviceInfo?
+    private var port: UInt16 = OMDProtocol.defaultPort
+    private var advertisedAddresses = LocalAddresses.Snapshot()
+    /// Re-reads the addresses whenever a link comes or goes. They were only
+    /// read at launch, so an adapter or cable plugged in afterwards was never
+    /// published and the Receiver could not find this Mac over it.
+    private var pathMonitor: NWPathMonitor?
+    private var refreshWork: DispatchWorkItem?
 
     init(queue: DispatchQueue) {
         self.queue = queue
@@ -37,13 +45,11 @@ final class BonjourAdvertiser {
                 on: NWEndpoint.Port(rawValue: port) ?? .any)
 
             let addresses = LocalAddresses.current()
-            log.info("Advertising addresses: eth=\(addresses.ethernet ?? "-") wifi=\(addresses.wifi ?? "-")")
-            listener.service = NWListener.Service(
-                name: device.name,
-                type: OMDProtocol.bonjourServiceType,
-                domain: nil,
-                txtRecord: BonjourAdvertiser.txtRecordData(for: device, port: port,
-                                                           addresses: addresses))
+            log.info("Advertising addresses: \(BonjourAdvertiser.describe(addresses))")
+            advertisedAddresses = addresses
+            self.device = device
+            self.port = port
+            listener.service = BonjourAdvertiser.service(for: device, port: port, addresses: addresses)
 
             listener.stateUpdateHandler = { [weak self] state in
                 guard let self else { return }
@@ -69,6 +75,7 @@ final class BonjourAdvertiser {
 
             self.listener = listener
             listener.start(queue: queue)
+            startWatchingLinks()
         } catch {
             log.failure("Creating listener on port \(port)", error)
             onStateChange?(.failed(error.localizedDescription))
@@ -76,10 +83,54 @@ final class BonjourAdvertiser {
     }
 
     func stop() {
+        pathMonitor?.cancel()
+        pathMonitor = nil
+        refreshWork?.cancel()
+        refreshWork = nil
         listener?.stateUpdateHandler = nil
         listener?.newConnectionHandler = nil
         listener?.cancel()
         listener = nil
+    }
+
+    private static func service(for device: DeviceInfo, port: UInt16,
+                                addresses: LocalAddresses.Snapshot) -> NWListener.Service {
+        NWListener.Service(name: device.name,
+                           type: OMDProtocol.bonjourServiceType,
+                           domain: nil,
+                           txtRecord: txtRecordData(for: device, port: port, addresses: addresses))
+    }
+
+    static func describe(_ addresses: LocalAddresses.Snapshot) -> String {
+        "eth=\(addresses.ethernet ?? "-") wifi=\(addresses.wifi ?? "-") tb=\(addresses.bridge ?? "-")"
+    }
+
+    private func startWatchingLinks() {
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] _ in self?.scheduleAddressRefresh() }
+        monitor.start(queue: queue)
+        pathMonitor = monitor
+    }
+
+    /// On `queue`. A new link gets its address a moment after it comes up
+    /// (a self-assigned 169.254 one takes a few seconds), so look twice.
+    private func scheduleAddressRefresh() {
+        refreshWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.refreshAddresses()
+            self?.queue.asyncAfter(deadline: .now() + 5) { self?.refreshAddresses() }
+        }
+        refreshWork = work
+        queue.asyncAfter(deadline: .now() + 1, execute: work)
+    }
+
+    private func refreshAddresses() {
+        guard let listener = listener, let device = device else { return }
+        let addresses = LocalAddresses.current()
+        guard addresses != advertisedAddresses else { return }
+        advertisedAddresses = addresses
+        log.info("Links changed; advertising addresses: \(BonjourAdvertiser.describe(addresses))")
+        listener.service = BonjourAdvertiser.service(for: device, port: port, addresses: addresses)
     }
 
     /// TXT record lets the Receiver render a useful list row ("Mac14,6",
@@ -100,6 +151,7 @@ final class BonjourAdvertiser {
         ]
         if let eth = addresses.ethernet { entries.append((OMDProtocol.TXTKey.ethernetAddress, eth)) }
         if let wifi = addresses.wifi { entries.append((OMDProtocol.TXTKey.wifiAddress, wifi)) }
+        if let bridge = addresses.bridge { entries.append((OMDProtocol.TXTKey.bridgeAddress, bridge)) }
 
         var data = Data()
         for (key, value) in entries {
