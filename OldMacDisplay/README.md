@@ -387,6 +387,18 @@ Grant it in System Settings › Privacy & Security › Screen Recording and
 the Host was probably launched from a terminal; quit it and launch it from
 Finder (see [First run: permissions](#first-run-permissions)).
 
+**"The virtual display was created but macOS never listed it as active".**
+macOS made the display but never let the desktop extend onto it. Seen on
+some Macs other than the one this was developed on. Since 0.3.5 the Host
+wakes its own screens first, waits up to 8 s instead of 3, switches the
+display from mirroring to extending if macOS mirrored it, and tries once
+more under a fresh display identity. If it still fails, the message ends
+with a **Details:** line saying what macOS reported, such as "online but not
+active", "asleep" or "mirrored", plus the macOS version. Please include that
+line when reporting it. Things worth checking meanwhile: turn off
+System Settings › Displays › Mirror, wake the Host's screen before
+connecting, and quit other virtual display apps (BetterDisplay, DeskPad).
+
 **The virtual display appears but the picture is blocky.**
 Check the Host panel. If "adapted to" is much below the target, the link is
 saturated: move to Ethernet, or drop Frame Rate to 30, or Quality to

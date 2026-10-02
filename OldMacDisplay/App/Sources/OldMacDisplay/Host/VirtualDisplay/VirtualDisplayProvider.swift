@@ -38,7 +38,8 @@ struct VirtualDisplayConfiguration: Equatable {
 enum VirtualDisplayError: LocalizedError {
     case unsupported(String)
     case creationFailed(String)
-    case didNotAppear
+    /// The detail says what macOS did report, for the user to pass on.
+    case didNotAppear(String)
 
     var errorDescription: String? {
         switch self {
@@ -46,8 +47,8 @@ enum VirtualDisplayError: LocalizedError {
             return "Virtual displays are not available on this macOS version. \(detail)"
         case .creationFailed(let detail):
             return "Could not create the virtual display. \(detail)"
-        case .didNotAppear:
-            return "The virtual display was created but macOS never listed it as active."
+        case .didNotAppear(let detail):
+            return "The virtual display was created but macOS never listed it as active. \(detail)"
         }
     }
 }

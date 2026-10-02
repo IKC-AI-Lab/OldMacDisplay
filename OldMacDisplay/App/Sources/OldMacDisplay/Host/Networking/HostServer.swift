@@ -402,7 +402,11 @@ final class HostServer {
 
         if activity == nil {
             activity = ProcessInfo.processInfo.beginActivity(
-                options: [.userInitiated, .latencyCritical, .idleSystemSleepDisabled],
+                // Display sleep is system-wide: when this Mac's screens
+                // idle off, the virtual one goes dark with them, and the
+                // old Mac shows a frozen frame.
+                options: [.userInitiated, .latencyCritical, .idleSystemSleepDisabled,
+                          .idleDisplaySleepDisabled],
                 reason: "Streaming a display")
         }
 
